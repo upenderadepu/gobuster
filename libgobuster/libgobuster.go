@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"sync"
@@ -25,45 +24,21 @@ type ResultToStringFunc func(*Gobuster, *Result) (*string, error)
 
 // Gobuster is the main object when creating a new run
 type Gobuster struct {
-	Opts               *Options
-	RequestsExpected   int
-	RequestsIssued     int
-	RequestsCountMutex *sync.RWMutex
-	plugin             GobusterPlugin
-	resultChan         chan Result
-	errorChan          chan error
-	LogInfo            *log.Logger
-	LogError           *log.Logger
+	Opts     *Options
+	Logger   Logger
+	plugin   GobusterPlugin
+	Progress *Progress
 }
 
 // NewGobuster returns a new Gobuster object
-func NewGobuster(opts *Options, plugin GobusterPlugin) (*Gobuster, error) {
+func NewGobuster(opts *Options, plugin GobusterPlugin, logger Logger) (*Gobuster, error) {
 	var g Gobuster
 	g.Opts = opts
 	g.plugin = plugin
-	g.RequestsCountMutex = new(sync.RWMutex)
-	g.resultChan = make(chan Result)
-	g.errorChan = make(chan error)
-	g.LogInfo = log.New(os.Stdout, "", log.LstdFlags)
-	g.LogError = log.New(os.Stderr, "[ERROR] ", log.LstdFlags)
+	g.Logger = logger
+	g.Progress = NewProgress()
 
 	return &g, nil
-}
-
-// Results returns a channel of Results
-func (g *Gobuster) Results() <-chan Result {
-	return g.resultChan
-}
-
-// Errors returns a channel of errors
-func (g *Gobuster) Errors() <-chan error {
-	return g.errorChan
-}
-
-func (g *Gobuster) incrementRequests() {
-	g.RequestsCountMutex.Lock()
-	g.RequestsIssued += g.plugin.RequestsPerRun()
-	g.RequestsCountMutex.Unlock()
 }
 
 func (g *Gobuster) worker(ctx context.Context, wordChan <-chan string, wg *sync.WaitGroup) {
@@ -77,7 +52,7 @@ func (g *Gobuster) worker(ctx context.Context, wordChan <-chan string, wg *sync.
 			if !ok {
 				return
 			}
-			g.incrementRequests()
+			g.Progress.incrementRequests()
 
 			wordCleaned := strings.TrimSpace(word)
 			// Skip "comment" (starts with #), as well as empty lines
@@ -86,10 +61,10 @@ func (g *Gobuster) worker(ctx context.Context, wordChan <-chan string, wg *sync.
 			}
 
 			// Mode-specific processing
-			err := g.plugin.Run(ctx, wordCleaned, g.resultChan)
+			err := g.plugin.ProcessWord(ctx, wordCleaned, g.Progress)
 			if err != nil {
 				// do not exit and continue
-				g.errorChan <- err
+				g.Progress.ErrorChan <- err
 				continue
 			}
 
@@ -117,31 +92,54 @@ func (g *Gobuster) getWordlist() (*bufio.Scanner, error) {
 		return nil, fmt.Errorf("failed to get number of lines: %w", err)
 	}
 
-	g.RequestsIssued = 0
-
-	// calcutate expected requests
-	g.RequestsExpected = lines
-	if g.Opts.PatternFile != "" {
-		g.RequestsExpected += lines * len(g.Opts.Patterns)
+	if lines-g.Opts.WordlistOffset <= 0 {
+		return nil, fmt.Errorf("offset is greater than the number of lines in the wordlist")
 	}
 
-	g.RequestsExpected *= g.plugin.RequestsPerRun()
+	// calcutate expected requests
+	g.Progress.IncrementTotalRequests(lines)
+
+	// add offset if needed (offset defaults to 0)
+	g.Progress.incrementRequestsIssues(g.Opts.WordlistOffset)
+
+	// call the function once with a dummy entry to receive the number
+	// of custom words per wordlist word
+	customWordsLen := len(g.plugin.AdditionalWords("dummy"))
+	if customWordsLen > 0 {
+		origExpected := g.Progress.RequestsExpected()
+		inc := origExpected * customWordsLen
+		g.Progress.IncrementTotalRequests(inc)
+	}
 
 	// rewind wordlist
 	_, err = wordlist.Seek(0, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to rewind wordlist: %w", err)
 	}
-	return bufio.NewScanner(wordlist), nil
+
+	wordlistScanner := bufio.NewScanner(wordlist)
+
+	// skip lines
+	for i := 0; i < g.Opts.WordlistOffset; i++ {
+		if !wordlistScanner.Scan() {
+			if err := wordlistScanner.Err(); err != nil {
+				return nil, fmt.Errorf("failed to skip lines in wordlist: %w", err)
+			}
+			return nil, fmt.Errorf("failed to skip lines in wordlist")
+		}
+	}
+
+	return wordlistScanner, nil
 }
 
 // Run the busting of the website with the given
 // set of settings from the command line.
 func (g *Gobuster) Run(ctx context.Context) error {
-	defer close(g.resultChan)
-	defer close(g.errorChan)
+	defer close(g.Progress.ResultChan)
+	defer close(g.Progress.ErrorChan)
+	defer close(g.Progress.MessageChan)
 
-	if err := g.plugin.PreRun(ctx); err != nil {
+	if err := g.plugin.PreRun(ctx, g.Progress); err != nil {
 		return err
 	}
 
@@ -180,10 +178,24 @@ Scan:
 				case wordChan <- w:
 				}
 			}
+
+			for _, w := range g.plugin.AdditionalWords(word) {
+				select {
+				// need to check here too otherwise wordChan will block
+				case <-ctx.Done():
+					break Scan
+				case wordChan <- w:
+				}
+			}
 		}
 	}
 	close(wordChan)
 	workerGroup.Wait()
+
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
 	return nil
 }
 

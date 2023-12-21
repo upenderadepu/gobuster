@@ -23,7 +23,9 @@ func runS3(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("error on creating gobusters3: %w", err)
 	}
 
-	if err := cli.Gobuster(mainContext, globalopts, plugin); err != nil {
+	log := libgobuster.NewLogger(globalopts.Debug)
+	if err := cli.Gobuster(mainContext, globalopts, plugin, log); err != nil {
+		log.Debugf("%#v", err)
 		return fmt.Errorf("error on running gobuster: %w", err)
 	}
 	return nil
@@ -35,24 +37,27 @@ func parseS3Options() (*libgobuster.Options, *gobusters3.OptionsS3, error) {
 		return nil, nil, err
 	}
 
-	plugin := gobusters3.NewOptionsS3()
+	pluginOpts := gobusters3.NewOptionsS3()
 
 	httpOpts, err := parseBasicHTTPOptions(cmdS3)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	plugin.UserAgent = httpOpts.UserAgent
-	plugin.Proxy = httpOpts.Proxy
-	plugin.Timeout = httpOpts.Timeout
-	plugin.NoTLSValidation = httpOpts.NoTLSValidation
+	pluginOpts.UserAgent = httpOpts.UserAgent
+	pluginOpts.Proxy = httpOpts.Proxy
+	pluginOpts.Timeout = httpOpts.Timeout
+	pluginOpts.NoTLSValidation = httpOpts.NoTLSValidation
+	pluginOpts.RetryOnTimeout = httpOpts.RetryOnTimeout
+	pluginOpts.RetryAttempts = httpOpts.RetryAttempts
+	pluginOpts.TLSCertificate = httpOpts.TLSCertificate
 
-	plugin.MaxFilesToList, err = cmdS3.Flags().GetInt("maxfiles")
+	pluginOpts.MaxFilesToList, err = cmdS3.Flags().GetInt("maxfiles")
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid value for maxfiles: %w", err)
 	}
 
-	return globalopts, plugin, nil
+	return globalopts, pluginOpts, nil
 }
 
 // nolint:gochecknoinits

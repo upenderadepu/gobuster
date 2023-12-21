@@ -1,25 +1,35 @@
 package cmd
 
 import (
+	"crypto/tls"
+	"encoding/pem"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/OJ/gobuster/v3/helper"
 	"github.com/OJ/gobuster/v3/libgobuster"
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/pkcs12"
 	"golang.org/x/term"
 )
 
 func addBasicHTTPOptions(cmd *cobra.Command) {
 	cmd.Flags().StringP("useragent", "a", libgobuster.DefaultUserAgent(), "Set the User-Agent string")
 	cmd.Flags().BoolP("random-agent", "", false, "Use a random User-Agent string")
-	cmd.Flags().StringP("proxy", "", "", "Proxy to use for requests [http(s)://host:port]")
+	cmd.Flags().StringP("proxy", "", "", "Proxy to use for requests [http(s)://host:port] or [socks5://host:port]")
 	cmd.Flags().DurationP("timeout", "", 10*time.Second, "HTTP Timeout")
 	cmd.Flags().BoolP("no-tls-validation", "k", false, "Skip TLS certificate verification")
+	cmd.Flags().BoolP("retry", "", false, "Should retry on request timeout")
+	cmd.Flags().IntP("retry-attempts", "", 3, "Times to retry on request timeout")
+	// client certificates, either pem or p12
+	cmd.Flags().StringP("client-cert-pem", "", "", "public key in PEM format for optional TLS client certificates")
+	cmd.Flags().StringP("client-cert-pem-key", "", "", "private key in PEM format for optional TLS client certificates (this key needs to have no password)")
+	cmd.Flags().StringP("client-cert-p12", "", "", "a p12 file to use for options TLS client certificates")
+	cmd.Flags().StringP("client-cert-p12-password", "", "", "the password to the p12 file")
 }
 
 func addCommonHTTPOptions(cmd *cobra.Command) error {
@@ -30,6 +40,7 @@ func addCommonHTTPOptions(cmd *cobra.Command) error {
 	cmd.Flags().StringP("password", "P", "", "Password for Basic Auth")
 	cmd.Flags().BoolP("follow-redirect", "r", false, "Follow redirects")
 	cmd.Flags().StringArrayP("headers", "H", []string{""}, "Specify HTTP headers, -H 'Header1: val1' -H 'Header2: val2'")
+	cmd.Flags().BoolP("no-canonicalize-headers", "", false, "Do not canonicalize HTTP header names. If set header names are sent as is.")
 	cmd.Flags().StringP("method", "m", "GET", "Use the following HTTP method")
 
 	if err := cmd.MarkFlagRequired("url"); err != nil {
@@ -52,7 +63,7 @@ func parseBasicHTTPOptions(cmd *cobra.Command) (libgobuster.BasicHTTPOptions, er
 		return options, fmt.Errorf("invalid value for random-agent: %w", err)
 	}
 	if randomUA {
-		ua, err := helper.GetRandomUserAgent()
+		ua, err := libgobuster.GetRandomUserAgent()
 		if err != nil {
 			return options, err
 		}
@@ -69,10 +80,68 @@ func parseBasicHTTPOptions(cmd *cobra.Command) (libgobuster.BasicHTTPOptions, er
 		return options, fmt.Errorf("invalid value for timeout: %w", err)
 	}
 
+	options.RetryOnTimeout, err = cmd.Flags().GetBool("retry")
+	if err != nil {
+		return options, fmt.Errorf("invalid value for retry: %w", err)
+	}
+
+	options.RetryAttempts, err = cmd.Flags().GetInt("retry-attempts")
+	if err != nil {
+		return options, fmt.Errorf("invalid value for retry-attempts: %w", err)
+	}
+
 	options.NoTLSValidation, err = cmd.Flags().GetBool("no-tls-validation")
 	if err != nil {
 		return options, fmt.Errorf("invalid value for no-tls-validation: %w", err)
 	}
+
+	pemFile, err := cmd.Flags().GetString("client-cert-pem")
+	if err != nil {
+		return options, fmt.Errorf("invalid value for client-cert-pem: %w", err)
+	}
+	pemKeyFile, err := cmd.Flags().GetString("client-cert-pem-key")
+	if err != nil {
+		return options, fmt.Errorf("invalid value for client-cert-pem-key: %w", err)
+	}
+	p12File, err := cmd.Flags().GetString("client-cert-p12")
+	if err != nil {
+		return options, fmt.Errorf("invalid value for client-cert-p12: %w", err)
+	}
+	p12Pass, err := cmd.Flags().GetString("client-cert-p12-password")
+	if err != nil {
+		return options, fmt.Errorf("invalid value for client-cert-p12-password: %w", err)
+	}
+
+	if pemFile != "" && p12File != "" {
+		return options, fmt.Errorf("please supply either a pem or a p12, not both")
+	}
+
+	if pemFile != "" {
+		cert, err := tls.LoadX509KeyPair(pemFile, pemKeyFile)
+		if err != nil {
+			return options, fmt.Errorf("could not load supplied pem key: %w", err)
+		}
+		options.TLSCertificate = &cert
+	} else if p12File != "" {
+		p12Content, err := os.ReadFile(p12File)
+		if err != nil {
+			return options, fmt.Errorf("could not read p12 %s: %w", p12File, err)
+		}
+		blocks, err := pkcs12.ToPEM(p12Content, p12Pass)
+		if err != nil {
+			return options, fmt.Errorf("could not load P12: %w", err)
+		}
+		var pemData []byte
+		for _, b := range blocks {
+			pemData = append(pemData, pem.EncodeToMemory(b)...)
+		}
+		cert, err := tls.X509KeyPair(pemData, pemData)
+		if err != nil {
+			return options, fmt.Errorf("could not load certificate from P12: %w", err)
+		}
+		options.TLSCertificate = &cert
+	}
+
 	return options, nil
 }
 
@@ -88,6 +157,9 @@ func parseCommonHTTPOptions(cmd *cobra.Command) (libgobuster.HTTPOptions, error)
 	options.Timeout = basic.Timeout
 	options.UserAgent = basic.UserAgent
 	options.NoTLSValidation = basic.NoTLSValidation
+	options.RetryOnTimeout = basic.RetryOnTimeout
+	options.RetryAttempts = basic.RetryAttempts
+	options.TLSCertificate = basic.TLSCertificate
 
 	options.URL, err = cmd.Flags().GetString("url")
 	if err != nil {
@@ -157,6 +229,12 @@ func parseCommonHTTPOptions(cmd *cobra.Command) (libgobuster.HTTPOptions, error)
 		header := libgobuster.HTTPHeader{Name: key, Value: value}
 		options.Headers = append(options.Headers, header)
 	}
+
+	noCanonHeaders, err := cmd.Flags().GetBool("no-canonicalize-headers")
+	if err != nil {
+		return options, fmt.Errorf("invalid value for no-canonicalize-headers: %w", err)
+	}
+	options.NoCanonicalizeHeaders = noCanonHeaders
 
 	// Prompt for PW if not provided
 	if options.Username != "" && options.Password == "" {

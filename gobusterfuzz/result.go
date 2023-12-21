@@ -2,11 +2,18 @@ package gobusterfuzz
 
 import (
 	"bytes"
-	"fmt"
+
+	"github.com/fatih/color"
+)
+
+var (
+	yellow = color.New(color.FgYellow).FprintfFunc()
+	green  = color.New(color.FgGreen).FprintfFunc()
 )
 
 // Result represents a single result
 type Result struct {
+	Word       string
 	Verbose    bool
 	Found      bool
 	Path       string
@@ -18,30 +25,22 @@ type Result struct {
 func (r Result) ResultToString() (string, error) {
 	buf := &bytes.Buffer{}
 
+	c := green
+
 	// Prefix if we're in verbose mode
 	if r.Verbose {
 		if r.Found {
-			if _, err := fmt.Fprintf(buf, "Found: "); err != nil {
-				return "", err
-			}
+			c(buf, "Found: ")
 		} else {
-			if _, err := fmt.Fprintf(buf, "Missed: "); err != nil {
-				return "", err
-			}
+			c = yellow
+			c(buf, "Missed: ")
 		}
 	} else if r.Found {
-		if _, err := fmt.Fprintf(buf, "Found: "); err != nil {
-			return "", err
-		}
+		c(buf, "Found: ")
 	}
 
-	if _, err := fmt.Fprintf(buf, "[Status=%d] [Length=%d] %s", r.StatusCode, r.Size, r.Path); err != nil {
-		return "", err
-	}
-
-	if _, err := fmt.Fprintf(buf, "\n"); err != nil {
-		return "", err
-	}
+	c(buf, "[Status=%d] [Length=%d] [Word=%s] %s", r.StatusCode, r.Size, r.Word, r.Path)
+	c(buf, "\n")
 
 	s := buf.String()
 	return s, nil

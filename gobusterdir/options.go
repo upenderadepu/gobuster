@@ -8,24 +8,27 @@ import (
 type OptionsDir struct {
 	libgobuster.HTTPOptions
 	Extensions                 string
-	ExtensionsParsed           libgobuster.StringSet
+	ExtensionsParsed           libgobuster.Set[string]
+	ExtensionsFile             string
 	StatusCodes                string
-	StatusCodesParsed          libgobuster.IntSet
+	StatusCodesParsed          libgobuster.Set[int]
 	StatusCodesBlacklist       string
-	StatusCodesBlacklistParsed libgobuster.IntSet
+	StatusCodesBlacklistParsed libgobuster.Set[int]
 	UseSlash                   bool
 	HideLength                 bool
 	Expanded                   bool
 	NoStatus                   bool
 	DiscoverBackup             bool
-	ExcludeLength              []int
+	ExcludeLength              string
+	ExcludeLengthParsed        libgobuster.Set[int]
 }
 
 // NewOptionsDir returns a new initialized OptionsDir
 func NewOptionsDir() *OptionsDir {
 	return &OptionsDir{
-		StatusCodesParsed:          libgobuster.NewIntSet(),
-		StatusCodesBlacklistParsed: libgobuster.NewIntSet(),
-		ExtensionsParsed:           libgobuster.NewStringSet(),
+		StatusCodesParsed:          libgobuster.NewSet[int](),
+		StatusCodesBlacklistParsed: libgobuster.NewSet[int](),
+		ExtensionsParsed:           libgobuster.NewSet[string](),
+		ExcludeLengthParsed:        libgobuster.NewSet[int](),
 	}
 }

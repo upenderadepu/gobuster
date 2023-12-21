@@ -9,6 +9,7 @@ import (
 	"os/signal"
 
 	"github.com/OJ/gobuster/v3/libgobuster"
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -87,6 +88,20 @@ func parseGlobalOptions() (*libgobuster.Options, error) {
 		return nil, fmt.Errorf("wordlist file %q does not exist: %w", globalopts.Wordlist, err2)
 	}
 
+	offset, err := rootCmd.Flags().GetInt("wordlist-offset")
+	if err != nil {
+		return nil, fmt.Errorf("invalid value for wordlist-offset: %w", err)
+	}
+
+	if offset < 0 {
+		return nil, fmt.Errorf("wordlist-offset must be bigger or equal to 0")
+	}
+	globalopts.WordlistOffset = offset
+
+	if globalopts.Wordlist == "-" && globalopts.WordlistOffset > 0 {
+		return nil, fmt.Errorf("wordlist-offset is not supported when reading from STDIN")
+	}
+
 	globalopts.PatternFile, err = rootCmd.Flags().GetString("pattern")
 	if err != nil {
 		return nil, fmt.Errorf("invalid value for pattern: %w", err)
@@ -136,6 +151,19 @@ func parseGlobalOptions() (*libgobuster.Options, error) {
 		return nil, fmt.Errorf("invalid value for no-error: %w", err)
 	}
 
+	noColor, err := rootCmd.Flags().GetBool("no-color")
+	if err != nil {
+		return nil, fmt.Errorf("invalid value for no-color: %w", err)
+	}
+	if noColor {
+		color.NoColor = true
+	}
+
+	globalopts.Debug, err = rootCmd.Flags().GetBool("debug")
+	if err != nil {
+		return nil, fmt.Errorf("invalid value for debug: %w", err)
+	}
+
 	return globalopts, nil
 }
 
@@ -153,11 +181,14 @@ func configureGlobalOptions() {
 func init() {
 	rootCmd.PersistentFlags().DurationP("delay", "", 0, "Time each thread waits between requests (e.g. 1500ms)")
 	rootCmd.PersistentFlags().IntP("threads", "t", 10, "Number of concurrent threads")
-	rootCmd.PersistentFlags().StringP("wordlist", "w", "", "Path to the wordlist")
+	rootCmd.PersistentFlags().StringP("wordlist", "w", "", "Path to the wordlist. Set to - to use STDIN.")
+	rootCmd.PersistentFlags().IntP("wordlist-offset", "", 0, "Resume from a given position in the wordlist (defaults to 0)")
 	rootCmd.PersistentFlags().StringP("output", "o", "", "Output file to write results to (defaults to stdout)")
 	rootCmd.PersistentFlags().BoolP("verbose", "v", false, "Verbose output (errors)")
 	rootCmd.PersistentFlags().BoolP("quiet", "q", false, "Don't print the banner and other noise")
 	rootCmd.PersistentFlags().BoolP("no-progress", "z", false, "Don't display progress")
 	rootCmd.PersistentFlags().Bool("no-error", false, "Don't display errors")
 	rootCmd.PersistentFlags().StringP("pattern", "p", "", "File containing replacement patterns")
+	rootCmd.PersistentFlags().Bool("no-color", false, "Disable color output")
+	rootCmd.PersistentFlags().Bool("debug", false, "Enable debug output")
 }
